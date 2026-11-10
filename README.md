@@ -283,7 +283,7 @@ Le serveur `/docker_data2` est le **maître absolu**.
 
 ### Règle n°2 : Comment sauvegarder ses propres fichiers de configuration ?
 
-#### Méthode 1 : Placer les fichiers au 1er niveau du conteneur (Recommandé)
+#### Méthode 1 : Placer les fichiers au 1er niveau du conteneur (Déconseillé)
 Sortir le fichier de configuration du sous-dossier `config/` pour le placer juste à côté du `docker-compose.yml` et le monter en lecture seule (`:ro`) :
 ```yaml
 volumes:
@@ -297,7 +297,7 @@ Puis ajouter les extensions souhaitées dans le bloc `rsync` du script :
   --include='/*/*.[yY][aA][mM][lL]' \
 ```
 
-#### Méthode 2 : L'inclusion chirurgicale dans un sous-dossier ("Poupées russes")
+#### Méthode 2 : L'inclusion chirurgicale dans un sous-dossier ("Poupées russes") (Recommandé)
 Si un fichier doit impérativement rester dans `config/` (ex: `settings.json`), il faut ouvrir la porte du sous-dossier puis cibler le fichier **avant** la ligne `--exclude='*'` finale. Grâce à `--prune-empty-dirs`, l'arborescence sera créée automatiquement sur Git sans aspirer les bases SQLite voisines :
 
 * *Pour un seul conteneur spécifique (`yamtrack`) :*
