@@ -45,6 +45,7 @@ if [ ! -d "$SRC" ]; then
   echo "Erreur : Le dossier source $SRC est introuvable." >&2
   exit 1
 fi
+
 if [ ! -d "$REPO/.git" ]; then
   echo "Erreur : Le dépôt Git $REPO n'est pas initialisé." >&2
   exit 1
@@ -71,6 +72,12 @@ fi
 mkdir -p "$REPO/$TARGET_SUBDIR"
 
 # --- SYNCHRONISATION LECTURE SEULE DEPUIS /docker_data2 ---
+# Règles d'inclusion :
+# 1. Exclut les dossiers de test à la racine commençant par _ (ex: _test/)
+# 2. Inclut le fichier .env et les .md à la racine de /docker_data2
+# 3. Autorise uniquement le 1er niveau de sous-dossiers (/*/)
+# 4. Inclut uniquement les compose, .md, .txt et .env de ce 1er niveau
+# 5. Exclut tout le reste (n'entre jamais dans config/, data/, db/, logs/, etc.)
 rsync -a --delete --prune-empty-dirs \
   --exclude='/_*' \
   --include='/.env' \
@@ -109,6 +116,27 @@ if [ -n "$(git status --porcelain)" ]; then
   fi
 else
   echo "Aucun changement détecté par rapport au dépôt."
+# ==========================================
+# NOTIFICATION DISCORD OU TELEGRAM
+# ==========================================
+      
+# OPTION 1 : DISCORD
+# DISCORD_WEBHOOK="https://discord.com/api/webhooks/XXX/YYY"
+# DISCORD_MSG=$(printf '{"content": "🐳 **Nouvelle PR de sauvegarde** (%s)\\nFichiers modifiés :\\n```text\\n%s\\n```\\nPense à la valider sur GitHub !"}' "$TIMESTAMP" "${CHANGED_FILES//$'\n'/\\n}")
+# curl -s -H "Content-Type: application/json" -d "$DISCORD_MSG" "$DISCORD_WEBHOOK" >/dev/null
+
+# OPTION 2 : TELEGRAM
+# TG_TOKEN="TON_TOKEN_BOT"
+# TG_CHAT_ID="TON_ID"
+# TG_MSG="🐳 Nouvelle PR de sauvegarde ($TIMESTAMP)
+#
+# Fichiers modifiés :
+# $CHANGED_FILES
+#
+# Pense à la valider sur GitHub !"
+# curl -s -G -d chat_id="$TG_CHAT_ID" --data-urlencode text="$TG_MSG" "https://api.telegram.org/bot$TG_TOKEN/sendMessage" >/dev/null
+      
+# ==========================================
 fi
 ```
 
