@@ -184,7 +184,7 @@ alias dcsync='systemctl start sync-compose.service && journalctl -u sync-compose
 * **Silencieux :** Le script s'arrête prématurément si aucun changement n'est détecté. Aucune création de branche ou notification inutile.
 
 ## 🛠️ Améliorations futures (À implémenter)
-* [ ] Intégration de la notification (Discord / Telegram) en fin de script.
+  ✅ Intégration de la notification (Discord / Telegram) en fin de script.
 * [ ] Ajout de l'argument `--dry-run` pour tester les exclusions rsync à blanc.
 * [ ] Ajout des inclusions spécifiques (poupées russes) pour des fichiers comme `/*/config/settings.json`.
 * [ ] Chiffrement à la volée du fichier `.env` (via `sops` ou `age`) avant le push GitHub.
