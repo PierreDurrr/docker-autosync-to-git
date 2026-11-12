@@ -1,0 +1,107 @@
+# =========================================================================
+# LEXIQUE RAPIDE DE SYNTAXE
+# =========================================================================
+# +  : INCLURE (attention à bien mettre un espace après le +)
+# -  : EXCLURE (attention à bien mettre un espace après le -)
+# P  : PROTÉGER sur la destination (empêche la suppression d'un élément)
+#
+# /*/  : N'explore QUE le premier niveau de sous-dossiers (bloque la profondeur).
+# /*** : Cible un dossier ET tout son contenu, de manière récursive.
+# *    : Remplace n'importe quel texte (sauf un slash /).
+#
+# ⚠️ RÈGLE D'OR : rsync lit de haut en bas. La 1ère règle qui correspond gagne.
+# On place toujours les exclusions fines AVANT les inclusions larges.
+# =========================================================================
+# =========================================================================
+# ==========================================
+# 1. PROTECTION & EXCLUSIONS GLOBALES
+# ==========================================
+P /.git/***
+- /_*
+- **/.cache*
+- **/cache/
+- **/.storage*
+
+# ==========================================
+# 2. FICHIERS GÉNÉRIQUES (RACINE & COMPOSE)
+# ==========================================
++ /.env
++ /*.[mM][dD]
++ /*/
++ /*/docker-compose.y*ml
++ /*/compose.y*ml
++ /*/*.[mM][dD]
++ /*/*.[tT][xX][tT]
++ /*/.env
+
+# ==========================================
+# 3. PATTERN STANDARD CONFIG
+# ==========================================
++ /*/config/
++ /*/config/config.y*ml
++ /*/config/config.json
++ /*/config/config.toml
++ /*/config/config.ini
++ /*/config/configuration.y*ml
+
+# ==========================================
+# 4. RÈGLES SPÉCIFIQUES PAR CONTENEUR
+# ==========================================
++ /authelia/config/*.y*ml
++ /bazarr/config/config/
++ /bazarr/config/config/config.yaml
++ /checkrr/config/checkrr.yaml
++ /diyhue/config/*.y*ml
++ /flixpatrol/config/default.json
++ /gaps/config/gaps.properties
+
+- /homeassistant/config/*.db*
+- /homeassistant/config/*.log*
+- /homeassistant/config/.HA_VERSION
++ /homeassistant/config/***
+
++ /mqtt/config/mosquitto.conf
+
++ /nginxproxymanager/config/nginx/***
++ /nginxproxymanager/config/custom_ssl/***
++ /nginxproxymanager/config/production.json
++ /nginxproxymanager/config/keys.json
+
++ /nsxlibrarymanager/config/*.keys
+
++ /ownfoil*/config/*.keys
++ /ownfoil*/config/*.txt
++ /ownfoil*/config/*.yaml
++ /ownfoil/config/secret_key
+
++ /pattrmm/config/preferences/
++ /pattrmm/config/preferences/*.y*ml
++ /plex-auto-languages/config/*.yaml
++ /prefetcharr/config/*.toml
++ /qbit-rectifiarr/config/*.json
+
+- /qbt/config/config/qBittorrent-data.conf
++ /qbt/config/config/
++ /qbt/config/config/*.conf
++ /qbt/config/config/*.json
++ /qbt/config/config/rss/
++ /qbt/config/config/rss/*.json
+
+- /retype/config/*.apk
++ /retype/config/***
+
+- /retype-elise/**/*.mp4
++ /retype-elise/config/***
++ /retype-elise/config-webserver/***
+
++ /rustatio/*.json
+
++ /seerr/config/settings.json
++ /seerr/logo/***
+
++ /unpackerr/config/unpackerr.conf
+
+# ==========================================
+# 5. FILET DE SÉCURITÉ (DOUBLÉ DANS LE SCRIPT)
+# ==========================================
+- *
