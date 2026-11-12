@@ -9,6 +9,9 @@ BASE_BRANCH="master"             # Branche principale (main ou master)
 SYNC_BRANCH="auto-sync"        # Branche dédiée aux Pull Requests automatiques
 LOCK_FILE="/run/sync-compose.lock"
 
+# IMPORTANT : Chemin vers le fichier de règles externe
+RULES="/docker_data2-script/rsync-rules.txt"
+
 # --- VERROU D'EXÉCUTION UNIQUE ---
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
@@ -27,6 +30,15 @@ if [ ! -d "$REPO/.git" ]; then
   exit 1
 fi
 
+# Garde-fou : le fichier de règles doit exister et être valide
+grep -q '^+ ' "$RULES" 2>/dev/null || { echo "Règles absentes ou invalides : $RULES" >&2; exit 1; }
+
+# Détection du mode dry-run (-n, -ni, --dry-run...)
+DRY=0
+for a in "$@"; do
+  [[ "$a" == "--dry-run" || "$a" =~ ^-[a-zA-Z]*n[a-zA-Z]*$ ]] && DRY=1
+done
+
 cd "$REPO"
 
 # Nettoyage d'éventuels fichiers non suivis laissés par un crash précédent
@@ -35,40 +47,44 @@ git clean -fd -q
 git fetch origin --prune
 
 # --- GESTION INTELLIGENTE DE LA BRANCHE DE PR ---
-PR_STATE=$(gh pr view "$SYNC_BRANCH" --json state -q .state 2>/dev/null || echo "NONE")
+# On ignore les manipulations Git si on est juste en train de tester (dry-run)
+if [ $DRY -eq 0 ]; then
+  PR_STATE=$(gh pr view "$SYNC_BRANCH" --json state -q .state 2>/dev/null || echo "NONE")
 
-if [ "$PR_STATE" = "OPEN" ]; then
-  echo "PR déjà ouverte sur $SYNC_BRANCH : mise à jour de la branche existante."
-  git checkout -B "$SYNC_BRANCH" "origin/$SYNC_BRANCH"
-else
-  echo "Aucune PR ouverte : préparation d'une nouvelle branche depuis $BASE_BRANCH."
-  git checkout -B "$SYNC_BRANCH" "origin/$BASE_BRANCH"
+  if [ "$PR_STATE" = "OPEN" ]; then
+    echo "PR déjà ouverte sur $SYNC_BRANCH : mise à jour de la branche existante."
+    git checkout -B "$SYNC_BRANCH" "origin/$SYNC_BRANCH"
+  else
+    echo "Aucune PR ouverte : préparation d'une nouvelle branche depuis $BASE_BRANCH."
+    git checkout -B "$SYNC_BRANCH" "origin/$BASE_BRANCH"
+  fi
 fi
 
 mkdir -p "$REPO/$TARGET_SUBDIR"
 
 # --- SYNCHRONISATION LECTURE SEULE DEPUIS /docker_data2 ---
-# Règles d'inclusion :
-# 1. Exclut les dossiers de test à la racine commençant par _ (ex: _test/)
-# 2. Inclut le fichier .env et les .md à la racine de /docker_data2
-# 3. Autorise uniquement le 1er niveau de sous-dossiers (/*/)
-# 4. Inclut uniquement les compose, .md, .txt et .env de ce 1er niveau
-# 5. Exclut tout le reste (n'entre jamais dans config/, data/, db/, logs/, etc.)
 rsync -a --delete --prune-empty-dirs \
-  --exclude='/_*' \
-  --include='/.env' \
-  --include='/*.[mM][dD]' \
-  --include='/*/' \
-  --include='/*/docker-compose.y*ml' \
-  --include='/*/compose.y*ml' \
-  --include='/*/*.[mM][dD]' \
-  --include='/*/*.[tT][xX][tT]' \
-  --include='/*/.env' \
+  --filter="merge $RULES" \
   --exclude='*' \
+  "$@" \
   "$SRC/" "$REPO/$TARGET_SUBDIR/"
 
+# --- NETTOYAGE DES DONNÉES VOLATILES ---
+SEERR_SETTINGS="$REPO/$TARGET_SUBDIR/seerr/config/settings.json"
+if [[ $DRY -eq 0 && -f "$SEERR_SETTINGS" ]]; then
+  sed -i -E 's/"lastScan": *[0-9]+/"lastScan": 0/g' "$SEERR_SETTINGS"
+fi
+
 # Protection des permissions du .env dans le dossier tampon
-[ -f "$REPO/$TARGET_SUBDIR/.env" ] && chmod 600 "$REPO/$TARGET_SUBDIR/.env"
+if [[ $DRY -eq 0 && -f "$REPO/$TARGET_SUBDIR/.env" ]]; then
+  chmod 600 "$REPO/$TARGET_SUBDIR/.env"
+fi
+
+# --- ARRÊT ICI SI DRY-RUN ---
+if [ $DRY -eq 1 ]; then
+  echo "✅ Simulation (dry-run) terminée. Aucune commande Git exécutée."
+  exit 0
+fi
 
 # --- COMMIT, PUSH ET CRÉATION DE LA PULL REQUEST ---
 if [ -n "$(git status --porcelain)" ]; then
@@ -92,25 +108,4 @@ if [ -n "$(git status --porcelain)" ]; then
   fi
 else
   echo "Aucun changement détecté par rapport au dépôt."
-# ==========================================
-# NOTIFICATION DISCORD OU TELEGRAM
-# ==========================================
-      
-# OPTION 1 : DISCORD
-# DISCORD_WEBHOOK="https://discord.com/api/webhooks/XXX/YYY"
-# DISCORD_MSG=$(printf '{"content": "🐳 **Nouvelle PR de sauvegarde** (%s)\\nFichiers modifiés :\\n```text\\n%s\\n```\\nPense à la valider sur GitHub !"}' "$TIMESTAMP" "${CHANGED_FILES//$'\n'/\\n}")
-# curl -s -H "Content-Type: application/json" -d "$DISCORD_MSG" "$DISCORD_WEBHOOK" >/dev/null
-
-# OPTION 2 : TELEGRAM
-# TG_TOKEN="TON_TOKEN_BOT"
-# TG_CHAT_ID="TON_ID"
-# TG_MSG="🐳 Nouvelle PR de sauvegarde ($TIMESTAMP)
-#
-# Fichiers modifiés :
-# $CHANGED_FILES
-#
-# Pense à la valider sur GitHub !"
-# curl -s -G -d chat_id="$TG_CHAT_ID" --data-urlencode text="$TG_MSG" "https://api.telegram.org/bot$TG_TOKEN/sendMessage" >/dev/null
-      
-# ==========================================
 fi
