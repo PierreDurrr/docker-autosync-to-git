@@ -75,6 +75,14 @@ if [[ $DRY -eq 0 && -f "$SEERR_SETTINGS" ]]; then
   sed -i -E 's/"lastScan": *[0-9]+/"lastScan": 0/g' "$SEERR_SETTINGS"
 fi
 
+DIYHUE_DIR="$REPO/$TARGET_SUBDIR/diyhue/config"
+if [[ $DRY -eq 0 && -d "$DIYHUE_DIR" ]]; then
+  find "$DIYHUE_DIR" -maxdepth 1 -name "*.yaml" -exec sed -i -E \
+    -e "s/(localtime: ')[0-9T:-]+(')/\11970-01-01T00:00:00\2/g" \
+    -e "s/(lastupdated: ')[0-9T:.-]+Z(')/\11970-01-01T00:00:00.000Z\2/g" \
+    -e "s/(buttonevent: )[0-9]+/\10/g" {} +
+fi
+
 # Protection des permissions du .env dans le dossier tampon
 if [[ $DRY -eq 0 && -f "$REPO/$TARGET_SUBDIR/.env" ]]; then
   chmod 600 "$REPO/$TARGET_SUBDIR/.env"
