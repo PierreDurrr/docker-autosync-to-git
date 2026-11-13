@@ -33,6 +33,7 @@ Ce projet met en place une sauvegarde automatisée, sécurisée et intelligente 
 │
 └── docker_data2-script/           # 🔵 SCRIPTS D'EXÉCUTION
     ├── sync-compose.sh            # Script principal
+    ├── rsync-rules.txt            # Règles de filtrage rsync (inclusions/exclusions)
     └── README.md                  # Documentation
 ```
 
