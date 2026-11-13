@@ -99,11 +99,131 @@ mkdir -p /docker_data2-git-sync/docker_data2
 
 ---
 
-## 🚀 4. Le Script Principal de Synchronisation
+## 🚀 4. Le Fichier de Règles et le Script de Synchronisation
 
-Créer le dossier et le fichier du script :
+Créer le dossier des scripts :
 ```bash
 mkdir -p /docker_data2-script
+```
+
+### Étape 4.1 : Créer le fichier de règles (`rsync-rules.txt`)
+```bash
+nano /docker_data2-script/rsync-rules.txt
+```
+
+Contenu de `/docker_data2-script/rsync-rules.txt` :
+```text
+# =========================================================================
+# LEXIQUE RAPIDE DE SYNTAXE
+# =========================================================================
+# +  : INCLURE (attention à bien mettre un espace après le +)
+# -  : EXCLURE (attention à bien mettre un espace après le -)
+# P  : PROTÉGER sur la destination (empêche la suppression d'un élément)
+#
+# /*/  : N'explore QUE le premier niveau de sous-dossiers (bloque la profondeur).
+# /*** : Cible un dossier ET tout son contenu, de manière récursive.
+# *    : Remplace n'importe quel texte (sauf un slash /).
+#
+# ⚠️ RÈGLE D'OR : rsync lit de haut en bas. La 1ère règle qui correspond gagne.
+# On place toujours les exclusions fines AVANT les inclusions larges.
+# =========================================================================
+
+# ==========================================
+# 1. PROTECTION & EXCLUSIONS GLOBALES
+# ==========================================
+P /.git/***
+- /_*
+- **/.cache*
+- **/cache/
+- **/.storage*
+
+# ==========================================
+# 2. FICHIERS GÉNÉRIQUES (RACINE & COMPOSE)
+# ==========================================
++ /.env
++ /*.[mM][dD]
++ /*/
++ /*/docker-compose.y*ml
++ /*/compose.y*ml
++ /*/*.[mM][dD]
++ /*/*.[tT][xX][tT]
++ /*/.env
+
+# ==========================================
+# 3. PATTERN STANDARD CONFIG
+# ==========================================
++ /*/config/
++ /*/config/config.y*ml
++ /*/config/config.json
++ /*/config/config.toml
++ /*/config/config.ini
++ /*/config/configuration.y*ml
+
+# ==========================================
+# 4. RÈGLES SPÉCIFIQUES PAR CONTENEUR
+# ==========================================
++ /authelia/config/*.y*ml
++ /bazarr/config/config/
++ /bazarr/config/config/config.yaml
++ /checkrr/config/checkrr.yaml
++ /diyhue/config/*.y*ml
++ /flixpatrol/config/default.json
++ /gaps/config/gaps.properties
+
+- /homeassistant/config/*.db*
+- /homeassistant/config/*.log*
+- /homeassistant/config/.HA_VERSION
++ /homeassistant/config/***
+
++ /mqtt/config/mosquitto.conf
+
++ /nginxproxymanager/config/nginx/***
++ /nginxproxymanager/config/custom_ssl/***
++ /nginxproxymanager/config/production.json
++ /nginxproxymanager/config/keys.json
+
++ /nsxlibrarymanager/config/*.keys
+
++ /ownfoil*/config/*.keys
++ /ownfoil*/config/*.txt
++ /ownfoil*/config/*.yaml
++ /ownfoil/config/secret_key
+
++ /pattrmm/config/preferences/
++ /pattrmm/config/preferences/*.y*ml
++ /plex-auto-languages/config/*.yaml
++ /prefetcharr/config/*.toml
++ /qbit-rectifiarr/config/*.json
+
+- /qbt/config/config/qBittorrent-data.conf
++ /qbt/config/config/
++ /qbt/config/config/*.conf
++ /qbt/config/config/*.json
++ /qbt/config/config/rss/
++ /qbt/config/config/rss/*.json
+
+- /retype/config/*.apk
++ /retype/config/***
+
+- /retype-elise/**/*.mp4
++ /retype-elise/config/***
++ /retype-elise/config-webserver/***
+
++ /rustatio/*.json
+
++ /seerr/config/settings.json
++ /seerr/logo/***
+
++ /unpackerr/config/unpackerr.conf
+
+# ==========================================
+# 5. FILET DE SÉCURITÉ (DOUBLÉ DANS LE SCRIPT)
+# ==========================================
+- *
+```
+
+### Étape 4.2 : Créer le script principal (`sync-compose.sh`)
+```bash
 nano /docker_data2-script/sync-compose.sh
 ```
 
@@ -119,6 +239,9 @@ TARGET_SUBDIR="docker_data2"   # Dossier cible dans le dépôt Git
 BASE_BRANCH="master"           # Branche principale (main ou master)
 SYNC_BRANCH="auto-sync"        # Branche dédiée aux Pull Requests automatiques
 LOCK_FILE="/run/sync-compose.lock"
+
+# IMPORTANT : Chemin vers le fichier de règles externe
+RULES="/docker_data2-script/rsync-rules.txt"
 
 # --- VERROU D'EXÉCUTION UNIQUE ---
 exec 9>"$LOCK_FILE"
@@ -138,6 +261,15 @@ if [ ! -d "$REPO/.git" ]; then
   exit 1
 fi
 
+# Garde-fou : le fichier de règles doit exister et être valide
+grep -q '^+ ' "$RULES" 2>/dev/null || { echo "Règles absentes ou invalides : $RULES" >&2; exit 1; }
+
+# Détection du mode dry-run (-n, -ni, --dry-run...)
+DRY=0
+for a in "$@"; do
+  [[ "$a" == "--dry-run" || "$a" =~ ^-[a-zA-Z]*n[a-zA-Z]*$ ]] && DRY=1
+done
+
 cd "$REPO"
 
 # Nettoyage d'éventuels fichiers non suivis laissés par un crash précédent
@@ -146,40 +278,52 @@ git clean -fd -q
 git fetch origin --prune
 
 # --- GESTION INTELLIGENTE DE LA BRANCHE DE PR ---
-PR_STATE=$(gh pr view "$SYNC_BRANCH" --json state -q .state 2>/dev/null || echo "NONE")
+# On ignore les manipulations Git si on est juste en train de tester (dry-run)
+if [ $DRY -eq 0 ]; then
+  PR_STATE=$(gh pr view "$SYNC_BRANCH" --json state -q .state 2>/dev/null || echo "NONE")
 
-if [ "$PR_STATE" = "OPEN" ]; then
-  echo "PR déjà ouverte sur $SYNC_BRANCH : mise à jour de la branche existante."
-  git checkout -B "$SYNC_BRANCH" "origin/$SYNC_BRANCH"
-else
-  echo "Aucune PR ouverte : préparation d'une nouvelle branche depuis $BASE_BRANCH."
-  git checkout -B "$SYNC_BRANCH" "origin/$BASE_BRANCH"
+  if [ "$PR_STATE" = "OPEN" ]; then
+    echo "PR déjà ouverte sur $SYNC_BRANCH : mise à jour de la branche existante."
+    git checkout -B "$SYNC_BRANCH" "origin/$SYNC_BRANCH"
+  else
+    echo "Aucune PR ouverte : préparation d'une nouvelle branche depuis $BASE_BRANCH."
+    git checkout -B "$SYNC_BRANCH" "origin/$BASE_BRANCH"
+  fi
 fi
 
 mkdir -p "$REPO/$TARGET_SUBDIR"
 
 # --- SYNCHRONISATION LECTURE SEULE DEPUIS /docker_data2 ---
-# Règles d'inclusion :
-# 1. Exclut les dossiers de test à la racine commençant par _ (ex: _test/)
-# 2. Inclut le fichier .env et les .md à la racine de /docker_data2
-# 3. Autorise uniquement le 1er niveau de sous-dossiers (/*/)
-# 4. Inclut uniquement les compose, .md, .txt et .env de ce 1er niveau
-# 5. Exclut tout le reste (n'entre jamais dans config/, data/, db/, logs/, etc.)
 rsync -a --delete --prune-empty-dirs \
-  --exclude='/_*' \
-  --include='/.env' \
-  --include='/*.[mM][dD]' \
-  --include='/*/' \
-  --include='/*/docker-compose.y*ml' \
-  --include='/*/compose.y*ml' \
-  --include='/*/*.[mM][dD]' \
-  --include='/*/*.[tT][xX][tT]' \
-  --include='/*/.env' \
+  --filter="merge $RULES" \
   --exclude='*' \
+  "$@" \
   "$SRC/" "$REPO/$TARGET_SUBDIR/"
 
+# --- NETTOYAGE DES DONNÉES VOLATILES ---
+SEERR_SETTINGS="$REPO/$TARGET_SUBDIR/seerr/config/settings.json"
+if [[ $DRY -eq 0 && -f "$SEERR_SETTINGS" ]]; then
+  sed -i -E 's/"lastScan": *[0-9]+/"lastScan": 0/g' "$SEERR_SETTINGS"
+fi
+
+DIYHUE_DIR="$REPO/$TARGET_SUBDIR/diyhue/config"
+if [[ $DRY -eq 0 && -d "$DIYHUE_DIR" ]]; then
+  find "$DIYHUE_DIR" -maxdepth 1 -name "*.yaml" -exec sed -i -E \
+    -e "s/(localtime: ')[0-9T:-]+(')/\11970-01-01T00:00:00\2/g" \
+    -e "s/(lastupdated: ')[0-9T:.-]+Z(')/\11970-01-01T00:00:00.000Z\2/g" \
+    -e "s/(buttonevent: )[0-9]+/\10/g" {} +
+fi
+
 # Protection des permissions du .env dans le dossier tampon
-[ -f "$REPO/$TARGET_SUBDIR/.env" ] && chmod 600 "$REPO/$TARGET_SUBDIR/.env"
+if [[ $DRY -eq 0 && -f "$REPO/$TARGET_SUBDIR/.env" ]]; then
+  chmod 600 "$REPO/$TARGET_SUBDIR/.env"
+fi
+
+# --- ARRÊT ICI SI DRY-RUN ---
+if [ $DRY -eq 1 ]; then
+  echo "✅ Simulation (dry-run) terminée. Aucune commande Git exécutée."
+  exit 0
+fi
 
 # --- COMMIT, PUSH ET CRÉATION DE LA PULL REQUEST ---
 if [ -n "$(git status --porcelain)" ]; then
@@ -209,6 +353,7 @@ fi
 Verrouiller les permissions et rendre le script exécutable :
 ```bash
 chmod 700 /docker_data2-script/sync-compose.sh
+chmod 600 /docker_data2-script/rsync-rules.txt
 ```
 
 ---
@@ -282,37 +427,33 @@ Le serveur `/docker_data2` est le **maître absolu**.
 * Si un dossier/fichier surveillé est ajouté manuellement depuis l'interface web de GitHub dans `docker_data2/`, `rsync --delete` constatera qu'il n'existe pas sur le serveur et proposera une PR pour **le supprimer**.
 * **Exception pour les brouillons (`0_template/`) :** Comme `rsync` cible uniquement `/docker_data2-git-sync/docker_data2/`, tout ce qui se trouve à la racine du dépôt Git (comme le dossier `0_template/`) est totalement ignoré par `rsync --delete` et ne sera jamais écrasé.
 
-### Règle n°2 : Comment sauvegarder ses propres fichiers de configuration ?
+### Règle n°2 : Comment sauvegarder les fichiers de configuration d'un nouveau conteneur ?
 
-#### Méthode 1 : Placer les fichiers au 1er niveau du conteneur (Déconseillé)
-Sortir le fichier de configuration du sous-dossier `config/` pour le placer juste à côté du `docker-compose.yml` et le monter en lecture seule (`:ro`) :
-```yaml
-volumes:
-  - ./nginx.conf:/etc/nginx/nginx.conf:ro
-  - ./config:/app/config
-```
-Puis ajouter les extensions souhaitées dans le bloc `rsync` du script :
-```bash
-  --include='/*/*.[cC][oO][nN][fF]' \
-  --include='/*/*.[jJ][sS][oO][nN]' \
-  --include='/*/*.[yY][aA][mM][lL]' \
-```
+Toutes les inclusions et exclusions se gèrent dans `/docker_data2-script/rsync-rules.txt` (sans toucher au script `sync-compose.sh`) :
 
-#### Méthode 2 : L'inclusion chirurgicale dans un sous-dossier ("Poupées russes") (Recommandé)
-Si un fichier doit impérativement rester dans `config/` (ex: `settings.json`), il faut ouvrir la porte du sous-dossier puis cibler le fichier **avant** la ligne `--exclude='*'` finale. Grâce à `--prune-empty-dirs`, l'arborescence sera créée automatiquement sur Git sans aspirer les bases SQLite voisines :
+1. **Cas automatique (Pattern standard) :**
+   Grâce à la section 3 de `rsync-rules.txt` (`+ /*/config/`), si un conteneur stocke sa configuration sous le nom `config.yml`, `config.yaml`, `config.json`, `config.toml`, `config.ini` ou `configuration.yaml` directement dans son sous-dossier `config/`, **il est sauvegardé automatiquement** sans rien modifier.
+2. **Cas spécifique (Inclusion chirurgicale) :**
+   Si le fichier porte un nom particulier ou se trouve dans un sous-dossier différent, l'ajouter dans la **Section 4** de `rsync-rules.txt` (toujours **avant** le `- *` final).
+   * *Exemple pour inclure un fichier précis :*
+     ```text
+     + /mon_conteneur/config/settings.json
+     ```
+   * *Exemple pour inclure tout un dossier `config/` sauf ses bases de données et logs (placer les `-` **avant** le `+`) :*
+     ```text
+     - /mon_conteneur/config/*.db*
+     - /mon_conteneur/config/*.log*
+     + /mon_conteneur/config/***
+     ```
+3. **Purger du dépôt Git un fichier nouvellement exclu :**
+   Si un fichier était déjà sauvegardé sur Git et que l'on vient d'ajouter une règle `- ` pour l'exclure, lancer une fois le script avec `--delete-excluded` pour le purger du dossier tampon :
+   ```bash
+   /docker_data2-script/sync-compose.sh --delete-excluded
+   ```
 
-* *Pour un seul conteneur spécifique (`yamtrack`) :*
-  ```bash
-  --include='/yamtrack/config/' \
-  --include='/yamtrack/config/settings.json' \
-  --exclude='*' \
-  ```
-* *Pour TOUS les conteneurs ayant un `settings.json` dans `config/` :*
-  ```bash
-  --include='/*/config/' \
-  --include='/*/config/settings.json' \
-  --exclude='*' \
-  ```
+### Règle n°3 : Neutralisation des données volatiles (`sed`)
+Certains conteneurs modifient leurs fichiers de configuration en permanence avec des horodatages ou des états matériels (ex: `lastScan` dans **Seerr**, ou `localtime`, `lastupdated` et `buttonevent` dans **diyHue**).
+Pour éviter de déclencher une Pull Request toutes les heures, le script `sync-compose.sh` neutralise ces valeurs à la volée via `sed` directement dans le dossier tampon `/docker_data2-git-sync` (sans jamais toucher aux fichiers de production dans `/docker_data2`) juste avant la vérification `git status`.
 
 ---
 
@@ -346,33 +487,21 @@ Pense à la valider sur GitHub !"
   1. Contacter **@BotFather** sur Telegram, envoyer `/newbot`, choisir un nom et récupérer le `TG_TOKEN`.
   2. Envoyer un premier message au bot, puis contacter **@userinfobot** (ou visiter `https://api.telegram.org/bot<TON_TOKEN>/getUpdates`) pour récupérer son `TG_CHAT_ID`.
 
-### Module B : Mode Simulation (`--dry-run`)
-Permet de vérifier à blanc ce que `rsync` va copier/supprimer et de valider que la mécanique fonctionne sans rien modifier ni pousser sur GitHub.
+### Module B : Mode Simulation (`--dry-run` / `-ni`) — Déjà intégré au script
+Le script `sync-compose.sh` détecte automatiquement tout argument de simulation (`--dry-run`, `-n`, `-ni`) passé en ligne de commande et transmet tous les paramètres supplémentaires à `rsync` via `"$@"`. En mode simulation, il bloque automatiquement les opérations Git (`checkout`, `commit`, `push`) et les modifications `sed`.
 
-1. **En haut du script (après `LOCK_FILE`) :**
+1. **Tester une synchronisation à blanc (affiche les fichiers qui seraient copiés/modifiés) :**
    ```bash
-   DRY_RUN=""
-   RSYNC_VERBOSE=""
-   if [ "${1:-}" = "--dry-run" ]; then
-     echo "🚀 Mode SIMULATION activé : aucune vraie modification ne sera effectuée."
-     DRY_RUN="--dry-run"
-     RSYNC_VERBOSE="v"
-   fi
+   /docker_data2-script/sync-compose.sh -ni
    ```
-2. **Sur la commande `rsync` :**
+2. **Tester à blanc l'effet d'une nouvelle règle d'exclusion :**
    ```bash
-   rsync -a$RSYNC_VERBOSE $DRY_RUN --delete --prune-empty-dirs \
+   /docker_data2-script/sync-compose.sh -ni --delete-excluded
    ```
-3. **Juste avant `# --- COMMIT, PUSH ET CRÉATION DE LA PULL REQUEST ---` :**
+3. **Alias de test rapide dans `/root/.bashrc` :**
    ```bash
-   if [ -n "$DRY_RUN" ]; then
-     echo "✅ Simulation terminée avec succès ! Le flux est sain, une vraie synchro fonctionnera."
-     exit 0
-   fi
-   ```
-4. **Alias de test dans `/root/.bashrc` :**
-   ```bash
-   alias dcsync-test='/docker_data2-script/sync-compose.sh --dry-run'
+   echo "alias dcsync-test='/docker_data2-script/sync-compose.sh -ni'" >> /root/.bashrc
+   source /root/.bashrc
    ```
 
 ### Module C : Pre-flight Check (Vérification de santé des conteneurs avant sync)
@@ -394,10 +523,11 @@ fi
 
 * ✅ Installation et authentification Git / GitHub CLI (`gh`) sur l'hôte.
 * ✅ Clonage du dépôt tampon `/docker_data2-git-sync` (`PierreDurrr/Compose`).
-* ✅ Création et sécurisation du script `/docker_data2-script/sync-compose.sh` avec filtrage strict `rsync`.
+* ✅ Création et sécurisation du script `/docker_data2-script/sync-compose.sh`.
+* ✅ Externalisation du filtrage dans `/docker_data2-script/rsync-rules.txt` avec inclusions chirurgicales par conteneur.
+* ✅ Neutralisation à la volée des métadonnées volatiles (`seerr`, `diyhue`) via `sed`.
+* ✅ Intégration native du mode simulation (`-n`, `-ni`, `--dry-run`) et du passage d'arguments (`"$@"`).
 * ✅ Mise en place et validation du service et du timer `systemd` (exécution horaire).
 * ✅ Création de l'alias manuel `dcsync` et purge des journaux de test.
-* ✅ Activation effective du webhook de notification (Discord / Telegram) dans le script.
-* ✅ Ajout de l'argument `--dry-run` (`dcsync-test`) dans le script en production.
-* ⏳ Ajout d'inclusions chirurgicales pour d'éventuels fichiers de configuration spécifiques (`/*/config/...`).
+* ⏳ Activation effective du webhook de notification (Discord / Telegram) dans le script.
 * ⏳ Chiffrement à la volée des fichiers `.env` (via `sops` ou `age`) avant l'envoi sur GitHub.
