@@ -42,6 +42,7 @@ P /.git/***
 + /*/config/config.json
 + /*/config/config.toml
 + /*/config/config.ini
++ /*/config/config.cfg
 + /*/config/configuration.y*ml
 
 # ==========================================
