@@ -5,12 +5,16 @@ set -euo pipefail
 SRC="/docker_data2"
 REPO="/docker_data2-git-sync"
 TARGET_SUBDIR="docker_data2"   # Dossier cible dans le dépôt Git
-BASE_BRANCH="master"             # Branche principale (main ou master)
+BASE_BRANCH="master"           # Branche principale (main ou master)
 SYNC_BRANCH="auto-sync"        # Branche dédiée aux Pull Requests automatiques
 LOCK_FILE="/run/sync-compose.lock"
 
 # IMPORTANT : Chemin vers le fichier de règles externe
 RULES="/docker_data2-script/rsync-rules.txt"
+
+# --- OPTIONS DE SAUVEGARDE HÔTE (ACTIVABLES / DÉSACTIVABLES) ---
+BACKUP_DAEMON_JSON=true
+BACKUP_FSTAB=true
 
 # --- VERROU D'EXÉCUTION UNIQUE ---
 exec 9>"$LOCK_FILE"
@@ -88,6 +92,41 @@ if [[ $DRY -eq 0 && -f "$REPO/$TARGET_SUBDIR/.env" ]]; then
   chmod 600 "$REPO/$TARGET_SUBDIR/.env"
 fi
 
+# --- SYNCHRONISATION DES CONFIGURATIONS HÔTE (DAEMON & FSTAB FILTRÉ) ---
+HOST_CONFIG_DIR="$REPO/host_config"
+mkdir -p "$HOST_CONFIG_DIR"
+
+# 1. Gestion de daemon.json (copie pure, rsync gère bien la date de modif)
+RSYNC_DAEMON_OPTS="-a"
+[ $DRY -eq 1 ] && RSYNC_DAEMON_OPTS="-a -ni"
+
+if [ "$BACKUP_DAEMON_JSON" = true ] && [ -f "/etc/docker/daemon.json" ]; then
+  rsync $RSYNC_DAEMON_OPTS "/etc/docker/daemon.json" "$HOST_CONFIG_DIR/daemon.json"
+else
+  [ $DRY -eq 0 ] && rm -f "$HOST_CONFIG_DIR/daemon.json"
+fi
+
+# 2. Gestion de fstab (filtrage temporaire + comparaison par empreinte)
+if [ "$BACKUP_FSTAB" = true ] && [ -f "/etc/fstab" ]; then
+  TMP_FSTAB="/tmp/sync_fstab_temp"
+  
+  # On coupe tout de la ligne 1 jusqu'au swap, on ne garde que la suite
+  sed '1,/swap\.img/d' /etc/fstab > "$TMP_FSTAB"
+  
+  # On FORCE la vérification par Checksum (-c) pour ignorer la date du fichier temp
+  RSYNC_FSTAB_OPTS="-a -c"
+  [ $DRY -eq 1 ] && RSYNC_FSTAB_OPTS="-a -c -ni"
+  
+  rsync $RSYNC_FSTAB_OPTS "$TMP_FSTAB" "$HOST_CONFIG_DIR/fstab"
+  rm -f "$TMP_FSTAB"
+else
+  [ $DRY -eq 0 ] && rm -f "$HOST_CONFIG_DIR/fstab"
+fi
+
+# Nettoyage si le dossier host_config devient vide
+[ $DRY -eq 0 ] && find "$HOST_CONFIG_DIR" -type d -empty -delete 2>/dev/null || true
+
+
 # --- ARRÊT ICI SI DRY-RUN ---
 if [ $DRY -eq 1 ]; then
   echo "✅ Simulation (dry-run) terminée. Aucune commande Git exécutée."
@@ -111,9 +150,30 @@ if [ -n "$(git status --porcelain)" ]; then
       --base "$BASE_BRANCH" \
       --head "$SYNC_BRANCH" \
       --title "Sync /docker_data2 du $TIMESTAMP" \
-      --body "$(printf "Modifications détectées dans \`/docker_data2\` :\n\n\`\`\`text\n%s\n\`\`\`" "$CHANGED_FILES")"
+      --body "$(printf "Modifications détectées dans \`/docker_data2\` et l'hôte :\n\n\`\`\`text\n%s\n\`\`\`" "$CHANGED_FILES")"
     echo "Nouvelle Pull Request créée avec succès."
   fi
+
+  # ==========================================
+  # NOTIFICATION DISCORD OU TELEGRAM (Optionnel)
+  # ==========================================
+  
+  # --- OPTION 1 : DISCORD ---
+  # DISCORD_WEBHOOK="https://discord.com/api/webhooks/XXX/YYY"
+  # DISCORD_MSG=$(printf '{"content": "🐳 **Nouvelle PR de sauvegarde** (%s)\\nFichiers modifiés :\\n```text\\n%s\\n```\\nPense à la valider sur GitHub !"}' "$TIMESTAMP" "${CHANGED_FILES//$'\n'/\\n}")
+  # curl -s -H "Content-Type: application/json" -d "$DISCORD_MSG" "$DISCORD_WEBHOOK" >/dev/null
+
+  # --- OPTION 2 : TELEGRAM ---
+  # TG_TOKEN="TON_TOKEN_BOT"
+  # TG_CHAT_ID="TON_ID"
+  # TG_MSG="🐳 Nouvelle PR de sauvegarde ($TIMESTAMP)
+  # 
+  # Fichiers modifiés :
+  # $CHANGED_FILES
+  # 
+  # Pense à la valider sur GitHub !"
+  # curl -s -G -d chat_id="$TG_CHAT_ID" --data-urlencode text="$TG_MSG" "https://api.telegram.org/bot$TG_TOKEN/sendMessage" >/dev/null
+
 else
   echo "Aucun changement détecté par rapport au dépôt."
 fi
