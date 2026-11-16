@@ -12,6 +12,10 @@ LOCK_FILE="/run/sync-compose.lock"
 # IMPORTANT : Chemin vers le fichier de règles externe
 RULES="/docker_data2-script/rsync-rules.txt"
 
+# --- OPTIONS DE SAUVEGARDE HÔTE (ACTIVABLES / DÉSACTIVABLES) ---
+BACKUP_DAEMON_JSON=true
+BACKUP_FSTAB=true
+
 # --- VERROU D'EXÉCUTION UNIQUE ---
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
@@ -88,6 +92,33 @@ if [[ $DRY -eq 0 && -f "$REPO/$TARGET_SUBDIR/.env" ]]; then
   chmod 600 "$REPO/$TARGET_SUBDIR/.env"
 fi
 
+# --- SYNCHRONISATION DES CONFIGURATIONS HÔTE (DAEMON & FSTAB FILTRÉ) ---
+HOST_CONFIG_DIR="$REPO/host_config"
+
+if [ $DRY -eq 0 ]; then
+  if { [ "$BACKUP_DAEMON_JSON" = true ] && [ -f "/etc/docker/daemon.json" ]; } || \
+     { [ "$BACKUP_FSTAB" = true ] && [ -f "/etc/fstab" ]; }; then
+    mkdir -p "$HOST_CONFIG_DIR"
+  fi
+
+  # 1. Gestion de daemon.json
+  if [ "$BACKUP_DAEMON_JSON" = true ] && [ -f "/etc/docker/daemon.json" ]; then
+    rsync -a "/etc/docker/daemon.json" "$HOST_CONFIG_DIR/daemon.json"
+  else
+    rm -f "$HOST_CONFIG_DIR/daemon.json"
+  fi
+
+  # 2. Gestion de fstab (on bascule p=1 dès qu'on croise swap.img, et on écrit tout ce qui suit)
+  if [ "$BACKUP_FSTAB" = true ] && [ -f "/etc/fstab" ]; then
+    awk '/swap\.img/ {p=1; next} p' /etc/fstab > "$HOST_CONFIG_DIR/fstab"
+  else
+    rm -f "$HOST_CONFIG_DIR/fstab"
+  fi
+
+  # Nettoyage si le dossier host_config devient vide
+  find "$HOST_CONFIG_DIR" -type d -empty -delete 2>/dev/null || true
+fi
+
 # --- ARRÊT ICI SI DRY-RUN ---
 if [ $DRY -eq 1 ]; then
   echo "✅ Simulation (dry-run) terminée. Aucune commande Git exécutée."
@@ -111,7 +142,7 @@ if [ -n "$(git status --porcelain)" ]; then
       --base "$BASE_BRANCH" \
       --head "$SYNC_BRANCH" \
       --title "Sync /docker_data2 du $TIMESTAMP" \
-      --body "$(printf "Modifications détectées dans \`/docker_data2\` :\n\n\`\`\`text\n%s\n\`\`\`" "$CHANGED_FILES")"
+      --body "$(printf "Modifications détectées dans \`/docker_data2\` et l'hôte :\n\n\`\`\`text\n%s\n\`\`\`" "$CHANGED_FILES")"
     echo "Nouvelle Pull Request créée avec succès."
   fi
 else
